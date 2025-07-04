@@ -43,7 +43,7 @@ int main(int argc, char *argv[]) {
 
     // Start the main client handler loop (blocking)
     client_handler(conn_info);
-
+    pthread_join(timestamp_thread, NULL); // Wait for the timestamp thread to finish
     // Graceful shutdown: Join all running threads
     LOG_SYS("Waiting for active client threads to finish...");
     thread_node_t *node;
@@ -54,7 +54,7 @@ int main(int argc, char *argv[]) {
         free(node);
     }
     LOG_SYS("All client threads have finished.");
-    pthread_join(timestamp_thread, NULL); // Wait for the timestamp thread to finish
+    
     // Clean up mutex
     pthread_mutex_destroy(&file_mutex);
     // Delete the socket file if it exists

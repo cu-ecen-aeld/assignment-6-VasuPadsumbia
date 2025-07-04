@@ -122,7 +122,7 @@ void *data_processing(void* socket_processing) {
 
         memcpy(sp->packet->data + sp->packet->length, buffer, bytes_received);
         sp->packet->length += bytes_received;
-        if (sp->packet->data[sp->packet->length] == '\n')
+        if (sp->packet->data[sp->packet->length-1] == '\n')
         {
             sp->packet->end_of_packet = true; // Set end_of_packet flag to true if newline is received
             write_to_file(AESD_SOCKET_FILE, sp->packet->data, sp->packet->length); // Write data to file
