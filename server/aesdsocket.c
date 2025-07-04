@@ -6,6 +6,47 @@ extern struct thread_list_head thread_list;
 extern pthread_mutex_t file_mutex;
 extern sig_atomic_t exit_requested;
 
+// Daemonize the process
+void daemonize() {
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork failed");
+        exit(EXIT_FAILURE);
+    }
+    if (pid > 0) {
+        // Parent exits
+        exit(EXIT_SUCCESS);
+    }
+
+    if (setsid() < 0) {
+        perror("setsid failed");
+        exit(EXIT_FAILURE);
+    }
+
+    pid = fork();
+    if (pid < 0) {
+        perror("second fork failed");
+        exit(EXIT_FAILURE);
+    }
+    if (pid > 0) {
+        exit(EXIT_SUCCESS);
+    }
+
+    umask(0);
+
+    if (chdir("/") < 0) {
+        perror("chdir failed");
+        exit(EXIT_FAILURE);
+    }
+
+    close(STDIN_FILENO);
+    close(STDOUT_FILENO);
+    close(STDERR_FILENO);
+    open("/dev/null", O_RDONLY);
+    open("/dev/null", O_RDWR);
+    open("/dev/null", O_RDWR);
+}
+
 void handle_signal_main(int signo) {
     LOG_SYS("Caught signal %d, exiting", signo);
     exit_requested = 1;
@@ -23,13 +64,18 @@ void setup_signal_handlers_main() {
 int main(int argc, char *argv[]) {
     setup_signal_handlers_main();
 
+     // Check for daemon mode
+    if (argc == 2 && strcmp(argv[1], "-d") == 0) {
+        daemonize();
+    }
+
     // Allocate and initialize server connection info
     struct connection_info *conn_info = (struct connection_info *)malloc(sizeof(struct connection_info));
     if (!conn_info) {
         LOG_ERR("Failed to allocate memory for connection info");
         return EXIT_FAILURE;
     }
-
+     
     // Zero out and set up server address
     memset(&conn_info->_addr, 0, sizeof(conn_info->_addr));
     conn_info->_addr.sin_family = AF_INET;

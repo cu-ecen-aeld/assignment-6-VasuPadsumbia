@@ -19,7 +19,7 @@ struct connection_info *create_connection_info(int sockfd, struct sockaddr_in *a
     }
     info->_sockfd = sockfd;
     info->_addr = *addr;
-    strncpy(info->_ip, ip, INET_ADDRSTRLEN);
+    strncpy(info->_ip, ip, INET_ADDRSTRLEN-1);
     return info;
 }
 
