@@ -33,6 +33,7 @@
 #define LOG_DEBUG(fmt, ...) fprintf(stdout, "[DEBUG]: " fmt "\n", ##__VA_ARGS__)
 
 extern sig_atomic_t exit_requested; // Flag to indicate if exit is requested
+extern int global_server_socket_fd;
 
 typedef struct thread_node {
     pthread_t data_node; // Thread ID for the client connection
@@ -106,9 +107,9 @@ void client_handler(void* connection_info);
 // It also sets the socket to be reusable, allowing it to be bound to the same address
 // even if the previous socket is still in the TIME_WAIT state.
 void server_handler(void* connection_info); 
-void setup_socket(void* connection_info); // Function to set up the socket and bind it to the specified address and port
+int setup_socket(void* connection_info); // Function to set up the socket and bind it to the specified address and port
 void write_to_file(const char *filename, const char *data, size_t length); // Function to write data to a file
-void read_from_file(const char *filename, char *buffer, size_t buffer_size); //
+size_t read_from_file(const char *filename, char *buffer, size_t buffer_size); //
 void setup_signal_handlers(); // Function to set up signal handlers for graceful shutdown
 void handle_signal(int signo); // Signal handler function to handle termination signals
 

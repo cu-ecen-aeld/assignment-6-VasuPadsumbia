@@ -48,43 +48,88 @@ void write_to_file(const char *filename, const char *data, size_t length) {
     if (written < length) {
         LOG_ERR("Failed to write all data to file %s: %s", filename, strerror(errno));
     } else {
-        LOG_SYS("Successfully wrote %zu bytes to file %s", written, filename);
+        //LOG_SYS("Successfully wrote %zu bytes to file %s", written, filename);
+    }
+    fflush(file); // Ensure data is written to disk
+    if (ferror(file)) {
+        LOG_ERR("Error writing to file %s: %s", filename, strerror(errno));
+    }
+    if (fsync(fileno(file)) < 0) {
+        LOG_ERR("Failed to sync file %s: %s", filename, strerror(errno));
     }
     fclose(file); // Close the file after writing
+    sync(); // Ensure all data is flushed to disk
 }
 
-void read_from_file(const char *filename, char *buffer, size_t buffer_size) {
+size_t read_from_file(const char *filename, char *buffer, size_t buffer_size) {
     FILE *file = fopen(filename, "r");
     if (!file) {
         LOG_ERR("Failed to open file %s for reading: %s", filename, strerror(errno));
-        return; // Return if file opening fails
+        return 0; // Return if file opening fails
     }
     size_t bytes_read = fread(buffer, sizeof(char), buffer_size - 1, file);
-    if (bytes_read < 0) {
-        LOG_ERR("Failed to read from file %s: %s", filename, strerror(errno));
-    } else {
-        //buffer[bytes_read] = '\n'; // Null-terminate the buffer
-        LOG_SYS("Successfully read %zu bytes from file %s", bytes_read, filename);
-    }
+    buffer[bytes_read] = '\0'; // Null-terminate the buffer
     fclose(file); // Close the file after reading
+    return bytes_read; // Return the number of bytes read
 }   
 void *timestamp(void *arg) {
      (void)arg;
     current_time = time(NULL); // Initialize current_time to the current time
-    char buffer[BUFFER_SIZE];
+    char buffer[BUFFER_SIZE] = {0}; // Buffer to hold the formatted time
     while (!exit_requested) {
         if (time(NULL) - current_time >= 10) {
-            LOG_SYS("Time since last log: %ld seconds", time(NULL) - current_time);
+            //LOG_SYS("Time since last log: %ld seconds", time(NULL) - current_time);
             current_time = time(NULL); // Update the current time after logging
             strftime(buffer, sizeof(buffer), "timestamp:%Y-%m-%d %H:%M:%S\n", localtime(&current_time)); // Format the current time
             pthread_mutex_lock(&file_mutex); // Lock the mutex for thread safety
             write_to_file(AESD_SOCKET_FILE, buffer, strlen(buffer)); // Write the formatted time to the file
             pthread_mutex_unlock(&file_mutex); // Unlock the mutex after writing
-            LOG_SYS("Timestamp written to file %s", AESD_SOCKET_FILE);
+            //LOG_SYS("Timestamp written to file %s", AESD_SOCKET_FILE);
         }
     }
     pthread_exit(NULL); // Exit the thread when exit is requested
 }
+//void *data_processing(void* socket_processing) {
+//    struct socket_processing *sp = socket_processing;
+//    if (!sp || !sp->connection_info || !sp->packet) pthread_exit(NULL);
+//
+//    int sockfd = sp->connection_info->_sockfd;
+//    char buffer[BUFFER_SIZE];
+//    ssize_t bytes_received;
+//
+//    while (!exit_requested && (bytes_received = recv(sockfd, buffer, sizeof(buffer) - 1, 0)) > 0) {
+//        sp->packet->data = realloc(sp->packet->data, sp->packet->length + bytes_received + 1);
+//        memcpy(sp->packet->data + sp->packet->length, buffer, bytes_received);
+//        sp->packet->length += bytes_received;
+//        sp->packet->data[sp->packet->length] = '\0';
+//
+//        if (sp->packet->data[sp->packet->length - 1] == '\n') {
+//            pthread_mutex_lock(&file_mutex);
+//            write_to_file(AESD_SOCKET_FILE, sp->packet->data, sp->packet->length);
+//            pthread_mutex_unlock(&file_mutex);
+//
+//            char response[BUFFER_SIZE * 100] = {0};  // large enough buffer to hold the full file contents
+//            size_t bytes_read = read_from_file(AESD_SOCKET_FILE, response, sizeof(response));
+//            pthread_mutex_unlock(&file_mutex);
+//                    
+//            send(sockfd, response, bytes_read, 0);
+//
+//            free(sp->packet->data);
+//            sp->packet->data = NULL;
+//            sp->packet->length = 0;
+//        }
+//    }
+//
+//    close(sockfd);
+//    free(sp->packet->data);
+//    free(sp->packet);
+//    free_connection_info(sp->connection_info);
+//    free(sp);
+//
+//    pthread_exit(NULL);
+//}
+
+
 void *data_processing(void* socket_processing) {
     struct socket_processing *sp = (struct socket_processing *)socket_processing;
     if (!sp || !sp->connection_info || !sp->packet) {
@@ -93,11 +138,11 @@ void *data_processing(void* socket_processing) {
         return NULL; // Return if the structure is invalid
     }
     int sockfd = sp->connection_info->_sockfd;
-    char buffer[BUFFER_SIZE];
+    char buffer[BUFFER_SIZE] = {0}; // Buffer to hold received data
     ssize_t bytes_received;
     sp->connection_active = true; // Set connection_active flag to true
 
-    while (!exit_requested && sp->connection_active) {
+    while (!exit_requested) {
         bytes_received = recv(sockfd, buffer, sizeof(buffer) - 1, 0);
         if (bytes_received < 0) {
             LOG_ERR("Failed to receive data: %s", strerror(errno));
@@ -105,13 +150,12 @@ void *data_processing(void* socket_processing) {
             //sp->connection_active = false; // Set connection_active flag to false
             break; // Return if receiving data fails
         } else if (bytes_received == 0) {
-            LOG_SYS("Client disconnected %s:%d", sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
+            //LOG_SYS("Client disconnected %s:%d", sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
             //pthread_exit(NULL); // Exit the thread if the client disconnects
             sp->connection_active = false; // Set connection_active flag to false
             break; // Return if the client disconnects 
         }
-        LOG_SYS("Received %zd bytes from client %s:%d", bytes_received, sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
-        pthread_mutex_lock(sp->packet->mutex); // Lock the mutex for thread safety
+        //LOG_SYS("Received %zd bytes from client %s:%d", bytes_received, sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
         sp->packet->data = (char *)realloc(sp->packet->data, sp->packet->length + bytes_received + 1);
         if (!sp->packet->data) {
             LOG_ERR("Failed to allocate memory for data: %s", strerror(errno));
@@ -122,30 +166,33 @@ void *data_processing(void* socket_processing) {
 
         memcpy(sp->packet->data + sp->packet->length, buffer, bytes_received);
         sp->packet->length += bytes_received;
-        if (sp->packet->data[sp->packet->length-1] == '\n')
-        {
-            sp->packet->end_of_packet = true; // Set end_of_packet flag to true if newline is received
-            write_to_file(AESD_SOCKET_FILE, sp->packet->data, sp->packet->length); // Write data to file
-            LOG_SYS("Received %zd bytes from client %s:%d", bytes_received, sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
-            LOG_DEBUG("Data: %s", sp->packet->data); // Log the received data
-        }
-        pthread_mutex_unlock(sp->packet->mutex); // Unlock the mutex after processing the data
-
-        if (sp->packet->end_of_packet) {
-            LOG_SYS("End of packet received from client %s:%d", sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
-            sp->packet->end_of_packet = false; // Reset end_of_packet flag for the next packet
-            char response[BUFFER_SIZE];
+        sp->packet->data[sp->packet->length] = '\0'; // Null-terminate the data buffer
+        
+        if (sp->packet->data[sp->packet->length - 1] == '\n')
+        {   
             pthread_mutex_lock(sp->packet->mutex); // Lock the mutex for thread safety
-            read_from_file(AESD_SOCKET_FILE, response, sizeof(response)); // Read data from file
-            if (send(sockfd, response, strlen(response), 0) < 0) {
+            write_to_file(AESD_SOCKET_FILE, sp->packet->data, sp->packet->length); // Write data to file
+            pthread_mutex_unlock(sp->packet->mutex); // Unlock the mutex after processing the data
+            sp->packet->end_of_packet = true; // Set end_of_packet flag to true if newline is received
+            //LOG_SYS("Received %zd bytes from client %s:%d", bytes_received, sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
+            //LOG_DEBUG("Data: %s", sp->packet->data); // Log the received data
+        }
+        
+        if (sp->packet->end_of_packet) {
+            //LOG_SYS("End of packet received from client %s:%d", sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
+            sp->packet->end_of_packet = false; // Reset end_of_packet flag for the next packet
+            char response[BUFFER_SIZE] = {0}; // Buffer to hold the response
+            pthread_mutex_lock(sp->packet->mutex); // Lock the mutex for thread safety
+            size_t bytes_read = read_from_file(AESD_SOCKET_FILE, response, sizeof(response)); // Read data from file
+            if (send(sockfd, response, bytes_read, 0) < 0) {
                 LOG_ERR("Failed to send response to client %s:%d: %s", sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port), strerror(errno));
             } else {
-                LOG_SYS("Sent response to client %s:%d", sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
+                //LOG_SYS("Sent response to client %s:%d", sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
             }
             pthread_mutex_unlock(sp->packet->mutex); // Unlock the mutex after sending the response
         }
     }    
-    LOG_SYS("Closed connection with client %s:%d", sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
+    //LOG_SYS("Closed connection with client %s:%d", sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
     free(sp->packet->data); // Free the data buffer after processing
     free(sp->packet); // Free the data packet structure
     free_connection_info(sp->connection_info); // Free the connection info structure
@@ -155,26 +202,29 @@ void *data_processing(void* socket_processing) {
     pthread_exit(NULL); // Exit the thread after processing the data 
 }
 
-void setup_socket(void* connection_info) {
+int setup_socket(void* connection_info) {
     struct connection_info *conn_info = (struct connection_info *)connection_info;
     if (!conn_info) {
         LOG_ERR("Invalid connection info");
-        return; // Return if the connection info is NULL
+        return -1; // Return if the connection info is NULL
     }
     
     conn_info->_sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    global_server_socket_fd = conn_info->_sockfd; // Initialize global server socket fd
     if (conn_info->_sockfd < 0) {
         LOG_ERR("Failed to create socket: %s", strerror(errno));
-        free_connection_info(conn_info); // Free the connection info structure
-        return; // Return if socket creation fails
+        //free_connection_info(conn_info); // Free the connection info structure
+        return -1; // Return if socket creation fails
     }
     
-    int opt = 1;
-    if (setsockopt(conn_info->_sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+    struct timeval timeout;
+    timeout.tv_sec = 5; // Set timeout to 5 seconds
+    timeout.tv_usec = 0; // Set microseconds to 0
+    if (setsockopt(conn_info->_sockfd, SOL_SOCKET, SO_REUSEADDR, &timeout, sizeof(timeout)) < 0) {
         LOG_ERR("Failed to set socket options: %s", strerror(errno));
         close(conn_info->_sockfd); // Close the socket
-        free_connection_info(conn_info); // Free the connection info structure
-        return; // Return if setting socket options fails
+        //free_connection_info(conn_info); // Free the connection info structure
+        return -1; // Return if setting socket options fails
     }
     
     memset(&conn_info->_addr, 0, sizeof(conn_info->_addr)); // Clear the address structure
@@ -185,18 +235,19 @@ void setup_socket(void* connection_info) {
     if (bind(conn_info->_sockfd, (struct sockaddr *)&conn_info->_addr, sizeof(conn_info->_addr)) < 0) {
         LOG_ERR("Failed to bind socket: %s", strerror(errno));
         close(conn_info->_sockfd); // Close the socket
-        free_connection_info(conn_info); // Free the connection info structure
-        return; // Return if binding the socket fails
+        //free_connection_info(conn_info); // Free the connection info structure
+        return -1; // Return if binding the socket fails
     }
     
     if (listen(conn_info->_sockfd, BACKLOG) < 0) {
         LOG_ERR("Failed to listen on socket: %s", strerror(errno));
         close(conn_info->_sockfd); // Close the socket
-        free_connection_info(conn_info); // Free the connection info structure
-        return; // Return if listening on the socket fails
+        //free_connection_info(conn_info); // Free the connection info structure
+        return -1; // Return if listening on the socket fails
     }
     
-    LOG_SYS("Socket setup complete on port %d", MY_PORT);
+    //LOG_SYS("Socket setup complete on port %d", MY_PORT);
+    return 0;
 }
 
 void client_handler(void* connection_info) {
@@ -204,20 +255,28 @@ void client_handler(void* connection_info) {
     if (!conn_info) {
         LOG_ERR("Invalid connection info, thread, or mutex");
         return; // Return if any of the pointers are NULL
+    }   
+    if (setup_socket(conn_info) < 0) {
+        LOG_ERR("Failed to set up socket");
+        free_connection_info(conn_info); // Free the connection info structure
+        return; // Return if socket setup fails
     }
-    setup_socket(conn_info); // Set up the socket for the connection
-    
+
     while (!exit_requested) {
         // Accept client connections
         int client_accepted = accept(conn_info->_sockfd, (struct sockaddr *)&conn_info->_addr, &(socklen_t){sizeof(conn_info->_addr)});
         if (client_accepted < 0) {
+            if (exit_requested) {
+                //LOG_SYS("Exit requested, stopping server");
+                break; // Exit the loop if exit is requested
+            }
             LOG_ERR("Failed to accept client connection: %s", strerror(errno));
             continue; // Continue to the next iteration if accept fails
         }
         
         // Get client IP address
         inet_ntop(AF_INET, &conn_info->_addr.sin_addr, conn_info->_ip, INET_ADDRSTRLEN);
-        LOG_SYS("Accepted connection from %s:%d", conn_info->_ip, ntohs(conn_info->_addr.sin_port));
+        //LOG_SYS("Accepted connection from %s:%d", conn_info->_ip, ntohs(conn_info->_addr.sin_port));
         
         // Create a new socket processing structure for the client
         struct socket_processing *sp = (struct socket_processing *)malloc(sizeof(struct socket_processing));
