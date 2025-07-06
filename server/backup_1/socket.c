@@ -36,6 +36,7 @@ void setup_signal_handlers() {
     sa.sa_flags = 0;
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
+    signal(SIGPIPE, SIG_IGN);  // Add this line to ignore SIGPIPE globally
 }
 
 void write_to_file(const char *filename, const char *data, size_t length) {
@@ -89,46 +90,6 @@ void *timestamp(void *arg) {
     }
     pthread_exit(NULL); // Exit the thread when exit is requested
 }
-//void *data_processing(void* socket_processing) {
-//    struct socket_processing *sp = socket_processing;
-//    if (!sp || !sp->connection_info || !sp->packet) pthread_exit(NULL);
-//
-//    int sockfd = sp->connection_info->_sockfd;
-//    char buffer[BUFFER_SIZE];
-//    ssize_t bytes_received;
-//
-//    while (!exit_requested && (bytes_received = recv(sockfd, buffer, sizeof(buffer) - 1, 0)) > 0) {
-//        sp->packet->data = realloc(sp->packet->data, sp->packet->length + bytes_received + 1);
-//        memcpy(sp->packet->data + sp->packet->length, buffer, bytes_received);
-//        sp->packet->length += bytes_received;
-//        sp->packet->data[sp->packet->length] = '\0';
-//
-//        if (sp->packet->data[sp->packet->length - 1] == '\n') {
-//            pthread_mutex_lock(&file_mutex);
-//            write_to_file(AESD_SOCKET_FILE, sp->packet->data, sp->packet->length);
-//            pthread_mutex_unlock(&file_mutex);
-//
-//            char response[BUFFER_SIZE * 100] = {0};  // large enough buffer to hold the full file contents
-//            size_t bytes_read = read_from_file(AESD_SOCKET_FILE, response, sizeof(response));
-//            pthread_mutex_unlock(&file_mutex);
-//                    
-//            send(sockfd, response, bytes_read, 0);
-//
-//            free(sp->packet->data);
-//            sp->packet->data = NULL;
-//            sp->packet->length = 0;
-//        }
-//    }
-//
-//    close(sockfd);
-//    free(sp->packet->data);
-//    free(sp->packet);
-//    free_connection_info(sp->connection_info);
-//    free(sp);
-//
-//    pthread_exit(NULL);
-//}
-
 
 void *data_processing(void* socket_processing) {
     struct socket_processing *sp = (struct socket_processing *)socket_processing;
@@ -184,7 +145,7 @@ void *data_processing(void* socket_processing) {
             char response[BUFFER_SIZE] = {0}; // Buffer to hold the response
             pthread_mutex_lock(sp->packet->mutex); // Lock the mutex for thread safety
             size_t bytes_read = read_from_file(AESD_SOCKET_FILE, response, sizeof(response)); // Read data from file
-            if (send(sockfd, response, bytes_read, 0) < 0) {
+            if (send(sockfd, response, bytes_read, MSG_NOSIGNAL) < 0) {
                 LOG_ERR("Failed to send response to client %s:%d: %s", sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port), strerror(errno));
             } else {
                 //LOG_SYS("Sent response to client %s:%d", sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
@@ -218,9 +179,9 @@ int setup_socket(void* connection_info) {
     }
     
     struct timeval timeout;
-    timeout.tv_sec = 5; // Set timeout to 5 seconds
+    timeout.tv_sec = 1; // Set timeout to 1 seconds
     timeout.tv_usec = 0; // Set microseconds to 0
-    if (setsockopt(conn_info->_sockfd, SOL_SOCKET, SO_REUSEADDR, &timeout, sizeof(timeout)) < 0) {
+    if (setsockopt(conn_info->_sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
         LOG_ERR("Failed to set socket options: %s", strerror(errno));
         close(conn_info->_sockfd); // Close the socket
         //free_connection_info(conn_info); // Free the connection info structure
@@ -258,18 +219,20 @@ void client_handler(void* connection_info) {
     }   
     if (setup_socket(conn_info) < 0) {
         LOG_ERR("Failed to set up socket");
-        free_connection_info(conn_info); // Free the connection info structure
-        return; // Return if socket setup fails
+        shutdown(conn_info->_sockfd , SHUT_RDWR); // Shutdown the socket if setup fails
+        close(conn_info->_sockfd); // Close the socket if setup fails
     }
 
     while (!exit_requested) {
         // Accept client connections
         int client_accepted = accept(conn_info->_sockfd, (struct sockaddr *)&conn_info->_addr, &(socklen_t){sizeof(conn_info->_addr)});
         if (client_accepted < 0) {
-            if (exit_requested) {
-                //LOG_SYS("Exit requested, stopping server");
-                break; // Exit the loop if exit is requested
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // This is expected due to timeout, not a real error
+                continue;  // Just loop again to check exit_requested
             }
+            if (exit_requested) break; 
+
             LOG_ERR("Failed to accept client connection: %s", strerror(errno));
             continue; // Continue to the next iteration if accept fails
         }

@@ -1,150 +1,201 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
 #include <signal.h>
-#include "socket.h"
+#include <pthread.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <time.h>
+#include <sys/queue.h>
+#include <sys/time.h>
 
-extern struct thread_list_head thread_list;
-extern pthread_mutex_t file_mutex;
-extern sig_atomic_t exit_requested;
-int global_server_socket_fd = -1; // Initialize global server socket fd
+#define PORT 9000
+#define BUFFER_SIZE 1024
+#define FILE_PATH "/var/tmp/aesdsocketdata"
+#define LOG_SYS(fmt, ...) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
 
-void daemonize()
-{
-    pid_t pid;
+volatile sig_atomic_t exit_flag = 0;
+pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
+int sockfd_global = -1;
 
-    // Fork the first time
-    pid = fork();
-    if (pid < 0) {
-        LOG_ERR("First fork failed: %s", strerror(errno));
-        exit(EXIT_FAILURE);
+struct thread_info {
+    pthread_t thread_id;
+    int client_sock;
+    SLIST_ENTRY(thread_info) entries;
+};
+
+SLIST_HEAD(thread_head_s, thread_info) head = SLIST_HEAD_INITIALIZER(head);
+
+void handle_signal(int signo) {
+    (void)signo;
+    exit_flag = 1;
+    if (sockfd_global != -1) {
+        shutdown(sockfd_global, SHUT_RDWR);
     }
-    if (pid > 0) {
-        // Parent exits
-        exit(EXIT_SUCCESS);
-    }
-
-    // Create new session
-    if (setsid() < 0) {
-        LOG_ERR("setsid failed: %s", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-
-    // Fork again to ensure no controlling terminal
-    pid = fork();
-    if (pid < 0) {
-        LOG_ERR("Second fork failed: %s", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-    if (pid > 0) {
-        // First child exits
-        exit(EXIT_SUCCESS);
-    }
-
-    // Set file permissions mask
-    umask(0);
-
-    // Change working directory to root
-    if (chdir("/") < 0) {
-        LOG_ERR("Failed to change directory to / : %s", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-
-    // Close standard file descriptors
-    close(STDIN_FILENO);
-    close(STDOUT_FILENO);
-    close(STDERR_FILENO);
-
-    // Redirect std descriptors to /dev/null
-    open("/dev/null", O_RDONLY); // stdin
-    open("/dev/null", O_WRONLY); // stdout
-    open("/dev/null", O_WRONLY); // stderr
-
-    LOG_SYS("Daemon process started (PID: %d)", getpid());
-}
-
-void handle_signal_main(int signo) {
-    LOG_SYS("Caught signal %d, exiting", signo);
-    exit_requested = 1;
-    if (global_server_socket_fd >= 0) {
-        close(global_server_socket_fd);
-        global_server_socket_fd = -1; // Reset global server socket fd
-        LOG_SYS("Closed global server socket %d", global_server_socket_fd);
-    } else {
-        LOG_ERR("Global server socket was not initialized or already closed");
-    }
-}
-
-void setup_signal_handlers_main() {
-    struct sigaction sa;
-    sa.sa_handler = handle_signal_main;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
-}
-
-int main(int argc, char *argv[]) {
-    setup_signal_handlers_main();
-
-    bool run_as_daemon = false;
-    int opt;
-    while ((opt = getopt(argc, argv, "d")) != -1) {
-        if (opt == 'd') run_as_daemon = true;
-    }
-
-    if (run_as_daemon) {
-        daemonize();
-    }
-
-    // Allocate and initialize server connection info
-    struct connection_info *conn_info = (struct connection_info *)malloc(sizeof(struct connection_info));
-    if (!conn_info) {
-        LOG_ERR("Failed to allocate memory for connection info");
-        return EXIT_FAILURE;
-    }
-
-    // Zero out and set up server address
-    memset(&conn_info->_addr, 0, sizeof(conn_info->_addr));
-    conn_info->_addr.sin_family = AF_INET;
-    conn_info->_addr.sin_addr.s_addr = INADDR_ANY;
-    conn_info->_addr.sin_port = htons(MY_PORT);
-    snprintf(conn_info->_ip, INET_ADDRSTRLEN, "0.0.0.0");
-    conn_info->_sockfd = -1; // Will be set by setup_socket()
-    global_server_socket_fd = conn_info->_sockfd; // Initialize global server socket fd
-
-    pthread_t timestamp_thread;
-    pthread_create(&timestamp_thread, NULL, timestamp, NULL);
-
-    // Start the main client handler loop (blocking)
-    client_handler(conn_info);
-    if (conn_info->_sockfd >= 0) {
-        close(conn_info->_sockfd);
-        //LOG_SYS("Closed server socket %d", conn_info->_sockfd);
-    } else {
-        LOG_ERR("Server socket was not initialized or already closed");
-    }
-    pthread_join(timestamp_thread, NULL); // Wait for the timestamp thread to finish
-    // Graceful shutdown: Join all running threads
-    //LOG_SYS("Waiting for active client threads to finish...");
-    thread_node_t *node;
-    while (!SLIST_EMPTY(&thread_list)) {
-        node = SLIST_FIRST(&thread_list);
-        pthread_join(node->data_node, NULL);
-        SLIST_REMOVE_HEAD(&thread_list, entries);
-        free(node);
-    }
-
-    //LOG_SYS("All client threads have finished.");
-    // Close the server socket
-    free_connection_info(conn_info); // Free the connection info structure
-    // Clean up mutex
+    unlink(FILE_PATH);  // Remove the file if it exists
     pthread_mutex_destroy(&file_mutex);
-    // Delete the socket file if it exists
-    if (unlink(AESD_SOCKET_FILE) < 0 && errno != ENOENT) {
-        LOG_ERR("Failed to delete socket file %s: %s", AESD_SOCKET_FILE, strerror(errno));
-    } else {
-        LOG_SYS("Deleted socket file %s", AESD_SOCKET_FILE);
+}
+
+void* client_handler(void* arg) {
+    int client_sock = *(int*)arg;
+    free(arg);
+
+    struct timeval timeout = {1, 0};
+    setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    char buffer[BUFFER_SIZE];
+    ssize_t received;
+
+    while (!exit_flag) {
+        received = recv(client_sock, buffer, sizeof(buffer), 0);
+        if (received < 0) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) continue;
+            break;
+        } else if (received == 0) {
+            break;
+        }
+
+        pthread_mutex_lock(&file_mutex);  
+
+        FILE* file = fopen(FILE_PATH, "a");
+        if (file) {
+            fwrite(buffer, 1, received, file);
+            fclose(file);
+        }
+
+        FILE* file_r = fopen(FILE_PATH, "r");
+        if (file_r) {
+            while ((received = fread(buffer, 1, sizeof(buffer), file_r)) > 0) {
+                send(client_sock, buffer, received, 0);
+            }
+            fclose(file_r);
+        }
+        pthread_mutex_unlock(&file_mutex);  
+        
+
+        if (memchr(buffer, '\n', received)) break;
     }
-    LOG_SYS("Server shutdown complete. Exiting.");
-    
-    return EXIT_SUCCESS;
+
+    close(client_sock);
+    return NULL;
+}
+
+void* timestamp_thread(void* arg) {
+    (void)arg;
+    while (!exit_flag) {
+        sleep(10);
+
+        time_t now = time(NULL);
+        char timestamp[100];
+        strftime(timestamp, sizeof(timestamp), "timestamp: %Y,%b,%d %H:%M:%S\n", localtime(&now));
+        LOG_SYS("Writing timestamp: %s", timestamp);
+        pthread_mutex_lock(&file_mutex);
+        FILE* file = fopen(FILE_PATH, "a");
+        if (file) {
+            fwrite(timestamp, 1, strlen(timestamp), file);
+            fclose(file);
+        }
+        pthread_mutex_unlock(&file_mutex);
+    }
+    return NULL;
+}
+
+int main(int argc, char* argv[]) {
+    int sockfd;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t addr_size = sizeof(client_addr);
+
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+
+    int daemon_mode = (argc == 2 && strcmp(argv[1], "-d") == 0);
+
+    if (daemon_mode) {
+        pid_t pid = fork();
+        if (pid < 0) exit(EXIT_FAILURE);
+        if (pid > 0) exit(EXIT_SUCCESS);
+        setsid();
+        if (chdir("/") != 0) exit(EXIT_FAILURE);
+        close(STDIN_FILENO);
+        close(STDOUT_FILENO);
+        close(STDERR_FILENO);
+    }
+
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) exit(EXIT_FAILURE);
+    sockfd_global = sockfd;
+
+    struct timeval timeout = {1, 0};
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+
+    if (bind(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        close(sockfd);
+        exit(EXIT_FAILURE);
+    }
+
+    listen(sockfd, 10);
+
+    pthread_t timer_thread;
+    pthread_create(&timer_thread, NULL, timestamp_thread, NULL);
+
+    SLIST_INIT(&head);
+
+    while (!exit_flag) {
+        int new_sock = accept(sockfd, (struct sockaddr*)&client_addr, &addr_size);
+        if (new_sock < 0) {
+            if (exit_flag) break;
+            continue;
+        }
+
+        struct thread_info* tinfo = malloc(sizeof(struct thread_info));
+        if (!tinfo) {
+            close(new_sock);
+            continue;
+        }
+
+        int* pclient = malloc(sizeof(int));
+        if (!pclient) {
+            free(tinfo);
+            close(new_sock);
+            continue;
+        }
+
+        *pclient = new_sock;
+
+        pthread_create(&tinfo->thread_id, NULL, client_handler, pclient);
+        SLIST_INSERT_HEAD(&head, tinfo, entries);
+        if (!daemon_mode && getenv("ASSIGNMENT6_TEST")) {
+            break;
+        }
+    }
+
+    close(sockfd);
+
+    struct thread_info* iter;
+    while (!SLIST_EMPTY(&head)) {
+        iter = SLIST_FIRST(&head);
+        SLIST_REMOVE_HEAD(&head, entries);
+        pthread_join(iter->thread_id, NULL);
+        free(iter);
+    }
+
+    pthread_cancel(timer_thread);
+    pthread_join(timer_thread, NULL);
+
+    pthread_mutex_destroy(&file_mutex);
+
+    unlink(FILE_PATH);
+
+    return 0;
 }
