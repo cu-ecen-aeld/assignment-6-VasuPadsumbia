@@ -10,7 +10,7 @@ endif
 CFLAGS ?= -Wall -Wextra -O2 -pthread
 LDFLAGS ?= -pthread
 
-SRC = aesdsocket.c
+SRC = aesdsocket.c socket.c
 OBJ = $(SRC:.c=.o)
 
 all: $(TARGET)

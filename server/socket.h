@@ -22,22 +22,26 @@
 #include <signal.h>
 #include <pthread.h>
 #include <sys/queue.h>
+#include <sys/time.h>
 
 #define MY_PORT 9000
 #define BACKLOG 10
 #define AESD_SOCKET_FILE "/var/tmp/aesdsocketdata.txt"
 #define BUFFER_SIZE 1024
+
 #define LOG_SYS(fmt, ...) fprintf(stdout, "[SYS]: " fmt "\n", ##__VA_ARGS__)
 #define LOG_ERR(fmt, ...) fprintf(stderr, "[ERROR]: " fmt "\n", ##__VA_ARGS__)
 #define LOG_DEBUG(fmt, ...) fprintf(stdout, "[DEBUG]: " fmt "\n", ##__VA_ARGS__)
 
 extern sig_atomic_t exit_requested; // Flag to indicate if exit is requested
+extern int global_server_socket_fd;
 
 typedef struct thread_node {
-    pthread_t thread_id;
+    pthread_t data_node; // Thread ID for the client connection
     struct socket_processing *sp;
     SLIST_ENTRY(thread_node) entries;
 } thread_node_t;
+SLIST_HEAD(thread_list_head, thread_node);
 
 struct connection_info {
     int _sockfd; // Socket file descriptor
@@ -56,6 +60,7 @@ struct data_packet {
 struct socket_processing {
     struct connection_info *connection_info; // Pointer to connection_info structure
     struct data_packet *packet; // Pointer to data_packet structure
+    bool connection_active; // Flag to indicate if the connection is active
 };
 // Function to create a connection_info structure
 // This function allocates memory for a connection_info structure and initializes it with the provided socket file
@@ -75,6 +80,7 @@ struct connection_info *create_connection_info(int sockfd, struct sockaddr_in *a
 // Note: This function should be called to avoid memory leaks after the connection is no longer needed
 void free_connection_info(struct connection_info *info);
 
+void *timestamp(void *arg); // Function to log the current timestamp every 10 seconds
 
 // Function to handle client connections
 // This function accepts incoming client connections and processes the received data.
@@ -101,10 +107,11 @@ void client_handler(void* connection_info);
 // It also sets the socket to be reusable, allowing it to be bound to the same address
 // even if the previous socket is still in the TIME_WAIT state.
 void server_handler(void* connection_info); 
-void setup_socket(void* connection_info); // Function to set up the socket and bind it to the specified address and port
+int setup_socket(void* connection_info); // Function to set up the socket and bind it to the specified address and port
 void write_to_file(const char *filename, const char *data, size_t length); // Function to write data to a file
-void read_from_file(const char *filename, char *buffer, size_t buffer_size); //
+size_t read_from_file(const char *filename, char *buffer, size_t buffer_size); //
 void setup_signal_handlers(); // Function to set up signal handlers for graceful shutdown
 void handle_signal(int signo); // Signal handler function to handle termination signals
 
+struct connection_info *create_connection_info(int sockfd, struct sockaddr_in *addr, char *ip);
 #endif // CLIENT_H

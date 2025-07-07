@@ -28,6 +28,7 @@
 #define BACKLOG 10
 #define AESD_SOCKET_FILE "/var/tmp/aesdsocketdata.txt"
 #define BUFFER_SIZE 1024
+
 #define LOG_SYS(fmt, ...) fprintf(stdout, "[SYS]: " fmt "\n", ##__VA_ARGS__)
 #define LOG_ERR(fmt, ...) fprintf(stderr, "[ERROR]: " fmt "\n", ##__VA_ARGS__)
 #define LOG_DEBUG(fmt, ...) fprintf(stdout, "[DEBUG]: " fmt "\n", ##__VA_ARGS__)
@@ -37,7 +38,6 @@ extern int global_server_socket_fd;
 
 typedef struct thread_node {
     pthread_t data_node; // Thread ID for the client connection
-    pthread_t timestamp_node; // Thread ID for the timestamp logging
     struct socket_processing *sp;
     SLIST_ENTRY(thread_node) entries;
 } thread_node_t;
@@ -113,4 +113,5 @@ size_t read_from_file(const char *filename, char *buffer, size_t buffer_size); /
 void setup_signal_handlers(); // Function to set up signal handlers for graceful shutdown
 void handle_signal(int signo); // Signal handler function to handle termination signals
 
+struct connection_info *create_connection_info(int sockfd, struct sockaddr_in *addr, char *ip);
 #endif // CLIENT_H

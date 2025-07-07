@@ -63,7 +63,7 @@ void write_to_file(const char *filename, const char *data, size_t length) {
         LOG_ERR("Failed to sync file %s: %s", filename, strerror(errno));
     }
     fclose(file); // Close the file after writing
-    sync(); // Ensure all data is flushed to disk
+    //sync(); // Ensure all data is flushed to disk
 }
 
 size_t read_from_file(const char *filename, char *buffer, size_t buffer_size) {
@@ -86,11 +86,11 @@ void *timestamp(void *arg) {
         current_time = time(NULL); // Get the current time
         strftime(timestamp_str, sizeof(timestamp_str), "timestamp:%Y-%m-%d %H:%M:%S\n", localtime(&current_time)); // Format the current time
         pthread_mutex_lock(&file_mutex); // Lock the mutex for thread safety
-        write_to_file(AESD_SOCKET_FILE, buffer, strlen(buffer)); // Write the formatted time to the file
+        write_to_file(AESD_SOCKET_FILE, timestamp_str, strlen(timestamp_str)); // Write the formatted time to the file
         pthread_mutex_unlock(&file_mutex); // Unlock the mutex after writing
         //LOG_SYS("Timestamp written to file %s", AESD_SOCKET_FILE);
     }
-    return NULL; // Exit the thread when exit is requested
+    pthread_exit(NULL); // Exit the thread when exit is requested
 }
 
 void *data_processing(void* socket_processing) {
@@ -102,7 +102,7 @@ void *data_processing(void* socket_processing) {
 
     char buffer[BUFFER_SIZE] = {0}; // Buffer to hold received data
     ssize_t bytes_received;
-    
+    char response[BUFFER_SIZE]; // Buffer to hold the response
     while (!exit_requested && sp->connection_active) {
         bytes_received = recv(sp->connection_info->_sockfd, buffer, sizeof(buffer) - 1, 0);
         if (bytes_received < 0) {
@@ -113,41 +113,47 @@ void *data_processing(void* socket_processing) {
         } 
         
         //LOG_SYS("Received %zd bytes from client %s:%d", bytes_received, sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
-        //sp->packet->data = (char *)realloc(sp->packet->data, sp->packet->length + bytes_received + 1);
-        //if (!sp->packet->data) {
-        //    LOG_ERR("Failed to allocate memory for data: %s", strerror(errno));
-        //    pthread_mutex_unlock(sp->packet->mutex); // Unlock the mutex before exiting
-        //    pthread_exit(NULL); // Exit the thread if memory allocation fails
-        //    break;    
-        //}
+        sp->packet->data = (char *)realloc(sp->packet->data, sp->packet->length + bytes_received + 1);
+        if (!sp->packet->data) {
+            LOG_ERR("Failed to allocate memory for data: %s", strerror(errno));
+            pthread_mutex_unlock(sp->packet->mutex); // Unlock the mutex before exiting
+            pthread_exit(NULL); // Exit the thread if memory allocation fails
+            break;    
+        }
 
         memcpy(sp->packet->data + sp->packet->length, buffer, bytes_received);
         sp->packet->length += bytes_received;
         sp->packet->data[sp->packet->length] = '\0'; // Null-terminate the data buffer
-        
-        pthread_mutex_lock(sp->packet->mutex); // Lock the mutex for thread safety
-        write_to_file(AESD_SOCKET_FILE, sp->packet->data, sp->packet->length); // Write data to file
-        char response[BUFFER_SIZE]; // Buffer to hold the response
-        size_t bytes_read = read_from_file(AESD_SOCKET_FILE, response, sizeof(response)); // Read data from file
-        if (send(sp->connection_info->_sockfd, response, bytes_read, MSG_NOSIGNAL) < 0) {
-            LOG_ERR("Failed to send response to client %s:%d: %s", sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port), strerror(errno));
-        }
-        pthread_mutex_unlock(sp->packet->mutex); // Unlock the mutex after sending the response
+        //LOG_DEBUG("Data: %s", sp->packet->data); // Log the received data
         
         if (strchr(sp->packet->data, '\n'))
         {   
             sp->packet->end_of_packet = true; // Set end_of_packet flag to true if newline is received
+            pthread_mutex_lock(sp->packet->mutex); // Lock the mutex for thread safety
+            write_to_file(AESD_SOCKET_FILE, sp->packet->data, sp->packet->length); // Write data to file
+            pthread_mutex_unlock(sp->packet->mutex); // Unlock the mutex after sending the response
             //LOG_SYS("Received %zd bytes from client %s:%d", bytes_received, sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
             //LOG_DEBUG("Data: %s", sp->packet->data); // Log the received data
-            break; // Break the loop if end of packet is detected
+        }
+        if (sp->packet->end_of_packet) {
+            //LOG_SYS("End of packet detected for client %s:%d", sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
+            sp->connection_active = false; // Set connection_active flag to false
+            pthread_mutex_lock(sp->packet->mutex); // Lock the mutex for thread safety
+            size_t bytes_read = read_from_file(AESD_SOCKET_FILE, response, sizeof(response)); // Read data from file
+            //LOG_DEBUG("Response: %s", response); // Log the response data
+            if (send(sp->connection_info->_sockfd, response, bytes_read, MSG_NOSIGNAL) < 0) {
+                LOG_ERR("Failed to send response to client %s:%d: %s", sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port), strerror(errno));
+            }
+            pthread_mutex_unlock(sp->packet->mutex); // Unlock the mutex after sending the response
         }
     }   
     //LOG_SYS("Closed connection with client %s:%d", sp->connection_info->_ip, ntohs(sp->connection_info->_addr.sin_port));
     close(sp->connection_info->_sockfd); // Close the client socket
+    free(sp->packet->data); // Free the data buffer
     free(sp->packet); // Free the data packet structure
     free_connection_info(sp->connection_info); // Free the connection info structure
     free(sp); // Free the socket processing structure
-    return NULL; // Exit the thread after processing the data    
+    pthread_exit(NULL); // Exit the thread after processing the data    
 }
 
 int setup_socket(void* connection_info) {
@@ -167,7 +173,9 @@ int setup_socket(void* connection_info) {
     struct timeval timeout;
     timeout.tv_sec = 1; // Set timeout to 1 seconds
     timeout.tv_usec = 0; // Set microseconds to 0
-    if (setsockopt(conn_info->_sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+    int opt = 1; // Option to reuse the address
+    //if (setsockopt(conn_info->_sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+    if (setsockopt(conn_info->_sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         LOG_ERR("Failed to set socket options: %s", strerror(errno));
         close(conn_info->_sockfd); // Close the socket
         //free_connection_info(conn_info); // Free the connection info structure
@@ -256,7 +264,7 @@ void client_handler(void* connection_info) {
         sp->packet->mutex = &file_mutex; // Use the global file mutex for thread safety
         sp->packet->data = NULL; // Initialize data pointer to NULL
         sp->packet->length = 0; // Initialize length to 0
-        sp->connection_active = false; // Initialize connection_active flag to false
+        sp->connection_active = true; // Initialize connection_active flag to false
         
         thread_node_t *node = (thread_node_t *)malloc(sizeof(thread_node_t));
         if (!node) {
