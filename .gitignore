@@ -1,19 +1,5 @@
-<<<<<<< HEAD
-*.o
-writer
-Test_*_Runner.c
-build/
-crosstool-ng
-aesd-build
-.vscode/
-test.sh.log
-aesdsocket
-server/aesdsocket
-server/valgrind-out.txt
-/actions-runner
-=======
 build
 .vscode
 valgrind-out.txt
 test.sh.log
->>>>>>> yocto-assignments-base/master
+/actions-runner
