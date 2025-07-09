@@ -27,8 +27,8 @@ FILES:${PN} += "${sysconfdir}/init.d/S99aesdsocket"
 
 inherit update-rc.d
 
-INITSCRIPT_NAME = "S99aesdsocket"
-INITSCRIPT_PARAMS = "defaults"
+INITSCRIPT_NAME = "S99aesdsocket" # This is the name of the script that will be installed in /etc/init.d
+INITSCRIPT_PARAMS = "defaults" # This sets the default runlevels for the script, which is 2, 3, 4, and 5
 
 # TODO: customize these as necessary for any libraries you need for your application
 # (and remove comment)
