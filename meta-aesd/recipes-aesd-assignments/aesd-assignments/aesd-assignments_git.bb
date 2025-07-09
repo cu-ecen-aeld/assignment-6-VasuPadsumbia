@@ -26,9 +26,13 @@ FILES:${PN} += "${bindir}/Makefile"
 FILES:${PN} += "${sysconfdir}/init.d/S99aesdsocket"
 
 inherit update-rc.d
+# This sets the name of the init script to be installed in /etc/init.d
+# and the parameters to be passed to the update-rc.d command
+# See https://git.yoctoproject.org/poky/plain/meta/classes/update-rc.d?h=kirkstone
+# and https://docs.yoctoproject.org/ref-manual/variables.html?highlight=workdir#term-SYSVINIT_SCRIPT
 
-INITSCRIPT_NAME = "S99aesdsocket" # This is the name of the script that will be installed in /etc/init.d
-INITSCRIPT_PARAMS = "defaults" # This sets the default runlevels for the script, which is 2, 3, 4, and 5
+INITSCRIPT_NAME = "S99aesdsocket" 
+INITSCRIPT_PARAMS = "defaults"
 
 # TODO: customize these as necessary for any libraries you need for your application
 # (and remove comment)
